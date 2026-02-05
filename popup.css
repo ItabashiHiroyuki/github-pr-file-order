@@ -1,0 +1,155 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  width: 350px;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+
+.container {
+  padding: 12px;
+}
+
+h1 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #f0f6fc;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+button {
+  padding: 6px 12px;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #21262d;
+  color: #c9d1d9;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+button:hover {
+  background: #30363d;
+}
+
+button.primary {
+  background: #238636;
+  border-color: #238636;
+  color: #fff;
+  flex: 1;
+}
+
+button.primary:hover {
+  background: #2ea043;
+}
+
+.file-list-container {
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #161b22;
+}
+
+.file-list {
+  list-style: none;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid #21262d;
+  cursor: grab;
+  transition: background 0.15s;
+}
+
+.file-list li:last-child {
+  border-bottom: none;
+}
+
+.file-list li:hover {
+  background: #21262d;
+}
+
+.file-list li.dragging {
+  opacity: 0.5;
+  background: #30363d;
+}
+
+.file-list li.drag-over {
+  border-top: 2px solid #58a6ff;
+}
+
+.file-list .drag-handle {
+  margin-right: 8px;
+  color: #484f58;
+  cursor: grab;
+}
+
+.file-list .order-number {
+  min-width: 20px;
+  margin-right: 8px;
+  color: #484f58;
+  font-size: 11px;
+}
+
+.file-list .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.file-list .file-name .path {
+  color: #8b949e;
+}
+
+.file-list .file-name .name {
+  color: #c9d1d9;
+}
+
+.empty-state {
+  padding: 20px;
+  text-align: center;
+  color: #8b949e;
+}
+
+.hint {
+  text-align: center;
+  color: #8b949e;
+  font-size: 11px;
+}
+
+/* Scrollbar */
+.file-list-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.file-list-container::-webkit-scrollbar-track {
+  background: #161b22;
+}
+
+.file-list-container::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.file-list-container::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}

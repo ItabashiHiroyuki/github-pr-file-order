@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR File Order</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>File Order</h1>
+
+    <div class="actions">
+      <button id="parse-btn" title="Parse from PR description">Parse from PR</button>
+      <button id="reset-btn" title="Reset to alphabetical order">Reset</button>
+    </div>
+
+    <div class="file-list-container">
+      <ul id="file-list" class="file-list"></ul>
+      <p id="empty-state" class="empty-state">
+        Open a GitHub PR's "Files changed" tab to see files here.
+      </p>
+    </div>
+
+    <div class="actions">
+      <button id="apply-btn" class="primary" title="Apply order to GitHub">Apply Order</button>
+    </div>
+
+    <p class="hint">Drag files to reorder</p>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

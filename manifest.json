@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub PR File Order",
+  "version": "1.0.0",
+  "description": "Reorder files in GitHub PR's Files changed tab based on Reading Order",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://github.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PR File Order"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*/pull/*/files*"],
+      "js": ["content.js"],
+      "css": ["content.css"]
+    }
+  ]
+}
