@@ -8,8 +8,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       break;
 
     case 'PARSE_READING_ORDER':
-      sendResponse({ order: parseReadingOrder() });
-      break;
+      parseReadingOrder().then(order => sendResponse({ order }));
+      return true; // keep channel open for async response
 
     case 'APPLY_ORDER':
       applyOrder(request.order);
@@ -19,76 +19,108 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });
 
-// Get list of files from the Files changed tab
-function getFileList() {
-  const files = [];
-
-  // Try different selectors for GitHub's file list
-  // The structure can vary between different GitHub versions
-  const fileElements = document.querySelectorAll('[data-file-path]');
-
-  if (fileElements.length > 0) {
-    fileElements.forEach(el => {
-      const path = el.getAttribute('data-file-path');
-      if (path && !files.includes(path)) {
-        files.push(path);
-      }
-    });
-  }
-
-  // Alternative: copilot-diff-entry elements
-  if (files.length === 0) {
-    const diffEntries = document.querySelectorAll('copilot-diff-entry');
-    diffEntries.forEach(el => {
-      const path = el.getAttribute('data-file-path');
-      if (path && !files.includes(path)) {
-        files.push(path);
-      }
-    });
-  }
-
-  // Alternative: file headers with aria-label
-  if (files.length === 0) {
-    const fileHeaders = document.querySelectorAll('.file-header[data-path]');
-    fileHeaders.forEach(el => {
-      const path = el.getAttribute('data-path');
-      if (path && !files.includes(path)) {
-        files.push(path);
-      }
-    });
-  }
-
-  return files;
+// Strip Unicode control characters (e.g. U+200E left-to-right mark)
+function cleanPath(str) {
+  return str.replace(/[\u200E\u200F\u200B\u200C\u200D\uFEFF]/g, '').trim();
 }
 
-// Parse Reading Order from PR description
-function parseReadingOrder() {
+// Get file path from a diff section element
+function getFilePathFromDiffElement(el) {
+  // 1. Try data-file-path attribute
+  const fpEl = el.querySelector('[data-file-path]');
+  if (fpEl) return fpEl.getAttribute('data-file-path');
+
+  // 2. Try link text containing file path (for new files)
+  const links = el.querySelectorAll('a');
+  for (const a of links) {
+    const text = cleanPath(a.textContent);
+    if (text.includes('/') && /\.\w+$/.test(text)) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
+// Get all diff section elements with their file paths
+function getFileDiffElements() {
+  const results = [];
+  const seen = new Set();
+
+  document.querySelectorAll('[id^="diff-"]').forEach(el => {
+    // Skip non-file elements
+    if (el.id === 'diff-comparison-viewer-container' || el.id === 'diff-file-tree-filter') return;
+
+    const path = getFilePathFromDiffElement(el);
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      results.push({ path, element: el });
+    }
+  });
+
+  return results;
+}
+
+// Get list of files from the Files changed tab
+function getFileList() {
+  return getFileDiffElements().map(({ path }) => path);
+}
+
+// Parse Reading Order from PR description (fetches PR page)
+async function parseReadingOrder() {
+  const urlMatch = window.location.href.match(/github\.com\/([^/]+\/[^/]+\/pull\/\d+)/);
+  if (!urlMatch) return [];
+
+  // Fetch PR conversation page to get description
+  const prUrl = `https://github.com/${urlMatch[1]}`;
+  const response = await fetch(prUrl);
+  const html = await response.text();
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
   // Find PR description body
-  const prBody = document.querySelector('.js-comment-body');
+  const prBody = doc.querySelector('.js-comment-body');
   if (!prBody) return [];
 
-  const text = prBody.innerText || prBody.textContent;
+  // Find "Reading Order" heading (h2) and collect file paths from the following list
+  const headings = prBody.querySelectorAll('h2, h3');
+  let readingOrderHeading = null;
 
-  // Find "## Reading Order" section
-  const readingOrderMatch = text.match(/##\s*Reading\s*Order\s*\n([\s\S]*?)(?=\n##|$)/i);
-  if (!readingOrderMatch) return [];
-
-  const section = readingOrderMatch[1];
-
-  // Extract file paths from numbered list or bullet points
-  const lines = section.split('\n');
-  const files = [];
-
-  for (const line of lines) {
-    // Match patterns like:
-    // 1. path/to/file.ts
-    // - path/to/file.ts
-    // * path/to/file.ts
-    // path/to/file.ts
-    const match = line.match(/^[\s]*(?:\d+\.|[-*])?\s*`?([^\s`]+\.[a-z]+)`?\s*$/i);
-    if (match) {
-      files.push(match[1]);
+  for (const h of headings) {
+    if (/reading\s*order/i.test(h.textContent)) {
+      readingOrderHeading = h;
+      break;
     }
+  }
+
+  if (!readingOrderHeading) return [];
+
+  // Collect list items after the heading
+  const files = [];
+  let sibling = readingOrderHeading.nextElementSibling;
+
+  while (sibling) {
+    // Stop at the next heading
+    if (/^H[1-6]$/.test(sibling.tagName)) break;
+
+    // Extract file paths from <li> elements in <ol> or <ul>
+    if (sibling.tagName === 'OL' || sibling.tagName === 'UL') {
+      const items = sibling.querySelectorAll('li');
+      for (const li of items) {
+        // Try <code> tag first (backtick-wrapped paths)
+        const code = li.querySelector('code');
+        const text = code ? code.textContent.trim() : li.textContent.trim();
+
+        // Extract file path
+        const match = text.match(/^([^\s]+\.\w+)/);
+        if (match) {
+          files.push(match[1]);
+        }
+      }
+    }
+
+    sibling = sibling.nextElementSibling;
   }
 
   return files;
@@ -96,35 +128,7 @@ function parseReadingOrder() {
 
 // Apply custom order to the file list DOM
 function applyOrder(order) {
-  // Find the container for file diffs
-  const container = document.querySelector('#files');
-  if (!container) {
-    console.warn('PR File Order: Could not find files container');
-    return;
-  }
-
-  // Get all file diff elements
-  const fileElements = [];
-
-  // Try different selectors
-  const selectors = [
-    'copilot-diff-entry',
-    '.file[data-file-path]',
-    'div[data-file-path]'
-  ];
-
-  for (const selector of selectors) {
-    const elements = container.querySelectorAll(selector);
-    if (elements.length > 0) {
-      elements.forEach(el => {
-        const path = el.getAttribute('data-file-path');
-        if (path) {
-          fileElements.push({ path, element: el });
-        }
-      });
-      break;
-    }
-  }
+  const fileElements = getFileDiffElements();
 
   if (fileElements.length === 0) {
     console.warn('PR File Order: No file elements found');
