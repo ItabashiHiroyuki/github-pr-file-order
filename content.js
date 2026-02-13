@@ -479,18 +479,23 @@ const observer = new MutationObserver(() => {
     return;
   }
 
-  // When new files lazy-load into the DOM, regenerate CSS rules and re-inject guide.
+  // When new files lazy-load or diff rows expand, regenerate CSS rules and re-inject guide.
   // Debounce to avoid excessive checks.
   if (!lastAppliedOrder && !lastAppliedGuide) return;
   if (fileCheckTimer) clearTimeout(fileCheckTimer);
   fileCheckTimer = setTimeout(() => {
     const currentCount = document.querySelectorAll('[data-file-path]').length;
-    if (currentCount !== lastKnownFileCount) {
-      if (lastAppliedOrder) regenerateOrderCSS();
-      // Re-inject reading guide when new files appear or diff rows expand
-      if (lastAppliedGuide && typeof window.applyReadingGuide === 'function') {
-        window.applyReadingGuide(lastAppliedGuide);
-      }
+    const fileCountChanged = currentCount !== lastKnownFileCount;
+
+    if (fileCountChanged && lastAppliedOrder) {
+      regenerateOrderCSS();
+    }
+
+    // Re-inject reading guide when new files appear OR diff rows expand (Expand button).
+    // We always re-inject on any mutation because expanded rows reveal new line numbers
+    // that may match guide comments. removeExistingGuides() + re-inject is cheap.
+    if (lastAppliedGuide && typeof window.applyReadingGuide === 'function') {
+      window.applyReadingGuide(lastAppliedGuide);
     }
   }, 300);
 });

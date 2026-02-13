@@ -149,7 +149,7 @@ function sanitizeComment(html) {
       }
 
       const href = el.getAttribute('href') || '';
-      if (isJavascriptHref(href)) {
+      if (isDangerousHref(href)) {
         el.removeAttribute('href');
       }
       continue;
@@ -363,9 +363,13 @@ function unwrapElement(el) {
  * @param {string} href
  * @returns {boolean}
  */
-function isJavascriptHref(href) {
+function isDangerousHref(href) {
   var normalized = String(href || '').replace(/[\u0000-\u001F\u007F-\u009F\s]+/g, '').toLowerCase();
-  return normalized.startsWith('javascript:');
+  // Block javascript: and data: schemes, only allow http(s), mailto, and relative URLs
+  if (normalized.startsWith('javascript:') || normalized.startsWith('data:') || normalized.startsWith('vbscript:')) {
+    return true;
+  }
+  return false;
 }
 
 /**
