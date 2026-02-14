@@ -62,13 +62,205 @@ function findCopilotHeader(fileEntryEl, filePath) {
 }
 
 /**
- * Build diff anchors for all files currently present in the DOM.
+ * @param {Element|null} link
+ * @returns {boolean}
+ */
+function isFileTreeLink(link) {
+  if (!link) return false;
+  return Boolean(
+    link.closest('nav[aria-label="File Tree"]') ||
+    link.closest('[data-target="diff-layout.fileTreeContainer"]') ||
+    link.closest('[data-target*="fileTree"]')
+  );
+}
+
+/**
+ * @returns {Element}
+ */
+function getDiffAreaElement() {
+  return document.querySelector('[data-target="diff-layout.mainContainer"]') ||
+    document.getElementById('files') ||
+    document.querySelector('.diff-view') ||
+    document.querySelector('main') ||
+    document.body;
+}
+
+/**
+ * @param {Element} link
+ * @param {Element} diffArea
+ * @returns {Element|null}
+ */
+function findFileEntryFromLink(link, diffArea) {
+  if (!link) return null;
+
+  var directEntry = link.closest('copilot-diff-entry, div[id^="diff-"]');
+  if (directEntry) return directEntry;
+
+  var semanticBlock = link.closest('details, section, article, li');
+  if (semanticBlock && semanticBlock.querySelector('table')) {
+    return semanticBlock;
+  }
+
+  var current = link.parentElement;
+  var depth = 0;
+  while (current && current !== diffArea && current !== document.body && depth < 14) {
+    if (current.querySelector('td[data-line-number], button[data-line-number], table')) {
+      return current;
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  current = link.parentElement;
+  depth = 0;
+  while (current && current !== diffArea && current !== document.body && depth < 8) {
+    if (current.parentElement && current.parentElement !== diffArea && current.parentElement.children.length > 1) {
+      return current.parentElement;
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return null;
+}
+
+/**
+ * @param {Element} entryEl
+ * @param {'exact'|'basename'} matchKind
+ * @param {string} normalizedPath
+ * @param {Element|null} diffTableEl
+ * @param {Element|null} headerEl
+ * @returns {number}
+ */
+function scoreFallbackCandidate(entryEl, matchKind, normalizedPath, diffTableEl, headerEl) {
+  var score = matchKind === 'exact' ? 100 : 10;
+
+  if (entryEl.tagName === 'COPILOT-DIFF-ENTRY') score += 60;
+  if (entryEl.matches && entryEl.matches('div[id^="diff-"]')) score += 50;
+  if (diffTableEl) score += 15;
+  if (headerEl) score += 5;
+
+  var attrPath = normalizeGuidePath(entryEl.getAttribute ? entryEl.getAttribute('data-file-path') : '');
+  if (attrPath && attrPath === normalizedPath) {
+    score += 100;
+  }
+
+  return score;
+}
+
+/**
+ * Find one fallback file entry by matching file path text in the diff area.
+ * @param {string} filePath
+ * @param {Set<Element>} usedEntries
+ * @returns {{fileEntryEl: Element, headerEl: Element|null, diffTableEl: Element|null}|null}
+ */
+function findFallbackAnchorByText(filePath, usedEntries) {
+  var normalizedPath = normalizeGuidePath(filePath);
+  if (!normalizedPath) return null;
+
+  var basename = normalizedPath.split('/').pop() || normalizedPath;
+  var diffArea = getDiffAreaElement();
+  var links = diffArea.querySelectorAll('a');
+
+  var exactCandidates = [];
+  var basenameCandidates = [];
+
+  links.forEach(function (link) {
+    if (isFileTreeLink(link)) return;
+
+    var linkText = normalizeGuidePath((link.textContent || '').trim());
+    if (!linkText) return;
+
+    var matchKind = null;
+    if (linkText === normalizedPath) {
+      matchKind = 'exact';
+    } else if (basename && linkText === basename) {
+      matchKind = 'basename';
+    }
+    if (!matchKind) return;
+
+    var fileEntryEl = findFileEntryFromLink(link, diffArea);
+    if (!fileEntryEl) return;
+    if (usedEntries.has(fileEntryEl)) return;
+
+    var diffTableEl = fileEntryEl.querySelector('table');
+    var headerEl = fileEntryEl.querySelector('.file-header, .js-file-header');
+    if (!headerEl && fileEntryEl.tagName === 'COPILOT-DIFF-ENTRY') {
+      headerEl = findCopilotHeader(fileEntryEl, normalizedPath);
+    }
+    if (!headerEl) {
+      headerEl = link.closest('summary, header, div') || fileEntryEl.firstElementChild || null;
+    }
+
+    var candidate = {
+      fileEntryEl: fileEntryEl,
+      headerEl: headerEl || null,
+      diffTableEl: diffTableEl || null,
+      matchKind: matchKind,
+      score: scoreFallbackCandidate(fileEntryEl, matchKind, normalizedPath, diffTableEl, headerEl)
+    };
+
+    if (matchKind === 'exact') {
+      exactCandidates.push(candidate);
+    } else {
+      basenameCandidates.push(candidate);
+    }
+  });
+
+  var candidates = exactCandidates.length > 0 ? exactCandidates : basenameCandidates;
+  if (!candidates.length) return null;
+
+  candidates.sort(function (a, b) { return b.score - a.score; });
+
+  return {
+    fileEntryEl: candidates[0].fileEntryEl,
+    headerEl: candidates[0].headerEl,
+    diffTableEl: candidates[0].diffTableEl
+  };
+}
+
+/**
+ * Build diff anchors for files currently present in the DOM.
+ * @param {string[]=} filePaths
  * @returns {GuideAnchor[]}
  */
-function buildGuideAnchors() {
+function buildGuideAnchors(filePaths) {
   var anchors = [];
   var seen = new Set();
+  var anchorByPath = new Map();
   var filePathEls = document.querySelectorAll('[data-file-path]');
+
+  /**
+   * @param {string} filePath
+   * @param {Element|null} fileEntryEl
+   * @param {Element|null} headerEl
+   * @param {Element|null} diffTableEl
+   * @returns {boolean}
+   */
+  function pushAnchor(filePath, fileEntryEl, headerEl, diffTableEl) {
+    if (!filePath || !fileEntryEl) return false;
+
+    var normalizedPath = normalizeGuidePath(filePath);
+    if (!normalizedPath) return false;
+
+    var key = normalizedPath + '::' + (fileEntryEl.id || 'no-id') + '::' + fileEntryEl.tagName;
+    if (seen.has(key)) return false;
+    seen.add(key);
+
+    var anchor = {
+      filePath: filePath,
+      fileEntryEl: fileEntryEl,
+      headerEl: headerEl || null,
+      diffTableEl: diffTableEl || null
+    };
+
+    anchors.push(anchor);
+    if (!anchorByPath.has(normalizedPath)) {
+      anchorByPath.set(normalizedPath, anchor);
+    }
+
+    return true;
+  }
 
   filePathEls.forEach(function (pathEl) {
     var filePath = pathEl.getAttribute('data-file-path');
@@ -98,19 +290,29 @@ function buildGuideAnchors() {
       }
     }
 
-    if (!fileEntryEl) return;
-
-    var key = normalizeGuidePath(filePath) + '::' + (fileEntryEl.id || 'no-id') + '::' + fileEntryEl.tagName;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    anchors.push({
-      filePath: filePath,
-      fileEntryEl: fileEntryEl,
-      headerEl: headerEl,
-      diffTableEl: diffTableEl || null
-    });
+    pushAnchor(filePath, fileEntryEl, headerEl, diffTableEl);
   });
+
+  if (Array.isArray(filePaths) && filePaths.length > 0) {
+    var usedEntries = new Set();
+    anchors.forEach(function (anchor) {
+      usedEntries.add(anchor.fileEntryEl);
+    });
+
+    filePaths.forEach(function (path) {
+      var normalizedPath = normalizeGuidePath(path);
+      if (!normalizedPath) return;
+      if (anchorByPath.has(normalizedPath)) return;
+
+      var fallback = findFallbackAnchorByText(path, usedEntries);
+      if (!fallback) return;
+
+      var added = pushAnchor(path, fallback.fileEntryEl, fallback.headerEl, fallback.diffTableEl);
+      if (!added) return;
+
+      usedEntries.add(fallback.fileEntryEl);
+    });
+  }
 
   return anchors;
 }
@@ -218,7 +420,7 @@ function buildInlineKey(filePath, side, line) {
  * Insert one inline reading guide row after a target diff row.
  * @param {GuideAnchor} anchor
  * @param {Element} targetRow
- * @param {{line: number, side: 'L'|'R', text: string}} comment
+ * @param {{line: number, side: 'L'|'R', text: string, isFileLevel?: boolean}} comment
  */
 function insertInlineGuideRow(anchor, targetRow, comment) {
   if (!anchor || !targetRow || !comment) return;
@@ -256,7 +458,9 @@ function insertInlineGuideRow(anchor, targetRow, comment) {
 
   var label = document.createElement('span');
   label.className = 'reading-guide-label';
-  label.textContent = '📖 Reading Guide (' + normalizeGuideSide(comment.side) + String(comment.line) + ')';
+  label.textContent = comment.isFileLevel
+    ? '📖 Reading Guide'
+    : '📖 Reading Guide (' + normalizeGuideSide(comment.side) + String(comment.line) + ')';
 
   var text = document.createElement('span');
   text.className = 'reading-guide-text';
@@ -355,7 +559,8 @@ function injectInlineComments(guide, anchors) {
     var comments = entry[1];
     if (!Array.isArray(comments) || comments.length === 0) return;
 
-    var anchor = anchorByPath.get(normalizeGuidePath(filePath));
+    var normalizedFilePath = normalizeGuidePath(filePath);
+    var anchor = anchorByPath.get(normalizedFilePath);
     if (!anchor) return;
 
     var bannerComments = [];
@@ -366,19 +571,22 @@ function injectInlineComments(guide, anchors) {
       var comment = {
         line: rawComment.line == null ? null : Number(rawComment.line),
         side: normalizeGuideSide(rawComment.side),
-        text: String(rawComment.text || '')
+        text: String(rawComment.text || ''),
+        isFileLevel: false
       };
 
       if (comment.line == null || Number.isNaN(comment.line)) {
-        bannerComments.push(comment);
-        return;
+        comment.line = 1;
+        comment.isFileLevel = true;
       }
 
       var targetRow = findDiffLine(anchor, comment.line, comment.side);
       if (targetRow) {
         insertInlineGuideRow(anchor, targetRow, comment);
       } else {
-        comment.unfound = true;
+        if (!comment.isFileLevel) {
+          comment.unfound = true;
+        }
         bannerComments.push(comment);
       }
     });
@@ -404,7 +612,8 @@ function removeExistingGuides() {
  */
 function applyReadingGuide(guide) {
   removeExistingGuides();
-  var anchors = buildGuideAnchors();
+  var anchorTargets = guide && Array.isArray(guide.fileOrder) ? guide.fileOrder : undefined;
+  var anchors = buildGuideAnchors(anchorTargets);
   injectInlineComments(guide, anchors);
 }
 

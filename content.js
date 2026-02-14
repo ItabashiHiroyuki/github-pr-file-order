@@ -23,7 +23,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     case 'APPLY_GUIDE':
       if (request.guide && typeof window.applyReadingGuide === 'function') {
-        window.applyReadingGuide(request.guide);
+        lastAppliedGuide = request.guide;
+        applyGuideSafely(request.guide);
         sendResponse({ success: true });
       } else {
         sendResponse({ success: false });
@@ -306,6 +307,39 @@ function injectOrderStyles(css) {
 let lastAppliedOrder = null;
 let lastAppliedGuide = null;
 let lastKnownFileCount = 0;
+let lastInjectedGuideCount = 0;
+let observer = null;
+const observerOptions = { childList: true, subtree: true };
+let observerPauseDepth = 0;
+
+function pauseObserver() {
+  if (!observer) return;
+  observerPauseDepth += 1;
+  if (observerPauseDepth === 1) {
+    observer.disconnect();
+  }
+}
+
+function resumeObserver() {
+  if (!observer) return;
+  observerPauseDepth = Math.max(0, observerPauseDepth - 1);
+  if (observerPauseDepth === 0) {
+    observer.observe(document.body, observerOptions);
+  }
+}
+
+function applyGuideSafely(guide) {
+  if (!guide || typeof window.applyReadingGuide !== 'function') return;
+
+  pauseObserver();
+  try {
+    window.applyReadingGuide(guide);
+  } finally {
+    resumeObserver();
+  }
+
+  lastInjectedGuideCount = document.querySelectorAll('[data-reading-guide-key]').length;
+}
 
 // Apply custom order to the file list DOM
 // Uses CSS order property via <style> injection to avoid breaking
@@ -419,7 +453,7 @@ async function autoApplyOrder() {
     parseReadingOrder().then(guide => {
       if (guide?.comments?.size > 0 && typeof window.applyReadingGuide === 'function') {
         lastAppliedGuide = guide;
-        window.applyReadingGuide(guide);
+        applyGuideSafely(guide);
       }
     });
     return;
@@ -434,7 +468,7 @@ async function autoApplyOrder() {
     // Also inject inline reading guide comments if available
     if (guide.comments && guide.comments.size > 0 && typeof window.applyReadingGuide === 'function') {
       lastAppliedGuide = guide;
-      window.applyReadingGuide(guide);
+      applyGuideSafely(guide);
     }
   }
 }
@@ -469,12 +503,15 @@ if (document.readyState === 'loading') {
 // Also handle GitHub's SPA navigation and lazy-loaded files
 let lastUrl = location.href;
 let fileCheckTimer = null;
-const observer = new MutationObserver(() => {
+observer = new MutationObserver(() => {
+  if (observerPauseDepth > 0) return;
+
   if (location.href !== lastUrl) {
     lastUrl = location.href;
     lastAppliedOrder = null;
     lastAppliedGuide = null;
     lastKnownFileCount = 0;
+    lastInjectedGuideCount = 0;
     autoApplyOrder();
     return;
   }
@@ -486,6 +523,9 @@ const observer = new MutationObserver(() => {
   fileCheckTimer = setTimeout(() => {
     const currentCount = document.querySelectorAll('[data-file-path]').length;
     const fileCountChanged = currentCount !== lastKnownFileCount;
+    if (fileCountChanged) {
+      lastKnownFileCount = currentCount;
+    }
 
     if (fileCountChanged && lastAppliedOrder) {
       regenerateOrderCSS();
@@ -495,9 +535,11 @@ const observer = new MutationObserver(() => {
     // We always re-inject on any mutation because expanded rows reveal new line numbers
     // that may match guide comments. removeExistingGuides() + re-inject is cheap.
     if (lastAppliedGuide && typeof window.applyReadingGuide === 'function') {
-      window.applyReadingGuide(lastAppliedGuide);
+      applyGuideSafely(lastAppliedGuide);
+    } else {
+      lastInjectedGuideCount = 0;
     }
   }, 300);
 });
 
-observer.observe(document.body, { childList: true, subtree: true });
+observer.observe(document.body, observerOptions);
