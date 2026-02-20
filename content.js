@@ -8,7 +8,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true; // keep channel open for async response
 
     case 'PARSE_READING_ORDER':
-      parseReadingOrder().then(order => sendResponse({ order }));
+      parseReadingOrder().then(guide => {
+        // Return both `order` (for popup.js backward compat) and full `guide`
+        sendResponse({ order: guide.fileOrder, guide });
+      });
       return true; // keep channel open for async response
 
     case 'APPLY_ORDER':
@@ -17,6 +20,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ success: true });
       });
       return true; // keep channel open for async
+
+    case 'APPLY_GUIDE':
+      if (request.guide && typeof window.applyReadingGuide === 'function') {
+        lastAppliedGuide = request.guide;
+        applyGuideSafely(request.guide);
+        sendResponse({ success: true });
+      } else {
+        sendResponse({ success: false });
+      }
+      return true;
   }
   return true;
 });
@@ -204,11 +217,11 @@ async function fetchFileListFromDiff() {
 }
 
 // Parse Reading Order from PR description.
-// Fetches the PR conversation page and extracts file paths using regex
-// (DOMParser doesn't work reliably on private repo HTML).
+// Returns { fileOrder: string[], comments: Map } using the new table-aware parser.
+// Falls back to legacy list format if no table is found.
 async function parseReadingOrder() {
   const urlMatch = window.location.href.match(/github\.com\/([^/]+\/[^/]+\/pull\/\d+)/);
-  if (!urlMatch) return [];
+  if (!urlMatch) return { fileOrder: [], comments: new Map() };
 
   // Fetch PR conversation page via background service worker
   const prUrl = `https://github.com/${urlMatch[1]}`;
@@ -223,36 +236,38 @@ async function parseReadingOrder() {
     html = await response.text();
   }
 
-  // Find the "Reading Order" section in raw HTML.
-  // Look for a heading containing "Reading Order", then collect all
-  // <code> elements after it that look like file paths.
+  // Use the new parser (table-first, legacy fallback)
+  if (typeof window.parseReadingGuideFromHTML === 'function') {
+    const guide = window.parseReadingGuideFromHTML(html);
+    console.log('PR File Order: parsed reading guide:', guide.fileOrder.length, 'files,',
+      guide.comments.size, 'files with comments');
+    return guide;
+  }
+
+  // Fallback: old regex-based parsing (should not reach here if parse.js is loaded)
+  console.warn('PR File Order: parseReadingGuideFromHTML not available, using fallback');
   const roMatch = html.match(/[Rr]eading\s*[Oo]rder/);
   if (!roMatch) {
     console.log('PR File Order: no "Reading Order" found in PR description');
-    return [];
+    return { fileOrder: [], comments: new Map() };
   }
 
-  // Extract the portion of HTML after "Reading Order"
   const afterRO = html.substring(roMatch.index);
-
-  // Collect file paths from <code>...</code> tags that look like file paths
   const codeMatches = [...afterRO.matchAll(/<code[^>]*>([^<]+)<\/code>/g)];
   const files = [];
   const seen = new Set();
 
   for (const m of codeMatches) {
     const text = m[1].trim();
-    // Must look like a file path: contains / or has a file extension
     if (text && (text.includes('/') || /\.\w+$/.test(text)) && !seen.has(text)) {
-      // Skip things that are clearly not file paths
       if (text.includes(' ') || text.startsWith('http')) continue;
       seen.add(text);
       files.push(text);
     }
   }
 
-  console.log('PR File Order: parsed reading order:', files.length, 'files');
-  return files;
+  console.log('PR File Order: parsed reading order (legacy):', files.length, 'files');
+  return { fileOrder: files, comments: new Map() };
 }
 
 // Compute SHA-256 hash of a string (GitHub uses this for diff element IDs)
@@ -288,9 +303,43 @@ function injectOrderStyles(css) {
   styleEl.textContent = css;
 }
 
-// Track the last applied order so we can re-apply when new files appear
+// Track the last applied order and guide so we can re-apply when new files appear
 let lastAppliedOrder = null;
+let lastAppliedGuide = null;
 let lastKnownFileCount = 0;
+let lastInjectedGuideCount = 0;
+let observer = null;
+const observerOptions = { childList: true, subtree: true };
+let observerPauseDepth = 0;
+
+function pauseObserver() {
+  if (!observer) return;
+  observerPauseDepth += 1;
+  if (observerPauseDepth === 1) {
+    observer.disconnect();
+  }
+}
+
+function resumeObserver() {
+  if (!observer) return;
+  observerPauseDepth = Math.max(0, observerPauseDepth - 1);
+  if (observerPauseDepth === 0) {
+    observer.observe(document.body, observerOptions);
+  }
+}
+
+function applyGuideSafely(guide) {
+  if (!guide || typeof window.applyReadingGuide !== 'function') return;
+
+  pauseObserver();
+  try {
+    window.applyReadingGuide(guide);
+  } finally {
+    resumeObserver();
+  }
+
+  lastInjectedGuideCount = document.querySelectorAll('[data-reading-guide-key]').length;
+}
 
 // Apply custom order to the file list DOM
 // Uses CSS order property via <style> injection to avoid breaking
@@ -400,14 +449,27 @@ async function autoApplyOrder() {
 
   if (savedOrder?.length) {
     applyOrder(savedOrder);
+    // Still parse guide for inline comments (saved order doesn't include comments)
+    parseReadingOrder().then(guide => {
+      if (guide?.comments?.size > 0 && typeof window.applyReadingGuide === 'function') {
+        lastAppliedGuide = guide;
+        applyGuideSafely(guide);
+      }
+    });
     return;
   }
 
   // No saved order — try parsing Reading Order from PR description
-  const order = await parseReadingOrder();
-  if (order?.length) {
-    await chrome.storage.local.set({ [prKey]: order });
-    applyOrder(order);
+  const guide = await parseReadingOrder();
+  if (guide?.fileOrder?.length) {
+    await chrome.storage.local.set({ [prKey]: guide.fileOrder });
+    applyOrder(guide.fileOrder);
+
+    // Also inject inline reading guide comments if available
+    if (guide.comments && guide.comments.size > 0 && typeof window.applyReadingGuide === 'function') {
+      lastAppliedGuide = guide;
+      applyGuideSafely(guide);
+    }
   }
 }
 
@@ -441,25 +503,43 @@ if (document.readyState === 'loading') {
 // Also handle GitHub's SPA navigation and lazy-loaded files
 let lastUrl = location.href;
 let fileCheckTimer = null;
-const observer = new MutationObserver(() => {
+observer = new MutationObserver(() => {
+  if (observerPauseDepth > 0) return;
+
   if (location.href !== lastUrl) {
     lastUrl = location.href;
     lastAppliedOrder = null;
+    lastAppliedGuide = null;
     lastKnownFileCount = 0;
+    lastInjectedGuideCount = 0;
     autoApplyOrder();
     return;
   }
 
-  // When new files lazy-load into the DOM, regenerate CSS rules.
+  // When new files lazy-load or diff rows expand, regenerate CSS rules and re-inject guide.
   // Debounce to avoid excessive checks.
-  if (!lastAppliedOrder) return;
+  if (!lastAppliedOrder && !lastAppliedGuide) return;
   if (fileCheckTimer) clearTimeout(fileCheckTimer);
   fileCheckTimer = setTimeout(() => {
     const currentCount = document.querySelectorAll('[data-file-path]').length;
-    if (currentCount !== lastKnownFileCount) {
+    const fileCountChanged = currentCount !== lastKnownFileCount;
+    if (fileCountChanged) {
+      lastKnownFileCount = currentCount;
+    }
+
+    if (fileCountChanged && lastAppliedOrder) {
       regenerateOrderCSS();
+    }
+
+    // Re-inject reading guide when new files appear OR diff rows expand (Expand button).
+    // We always re-inject on any mutation because expanded rows reveal new line numbers
+    // that may match guide comments. removeExistingGuides() + re-inject is cheap.
+    if (lastAppliedGuide && typeof window.applyReadingGuide === 'function') {
+      applyGuideSafely(lastAppliedGuide);
+    } else {
+      lastInjectedGuideCount = 0;
     }
   }, 300);
 });
 
-observer.observe(document.body, { childList: true, subtree: true });
+observer.observe(document.body, observerOptions);

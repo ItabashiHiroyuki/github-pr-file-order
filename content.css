@@ -37,3 +37,51 @@
     opacity: 0;
   }
 }
+
+/* ========== Reading Guide Styles ========== */
+
+/* Inline comment row (inside diff table) */
+.reading-guide-row {
+  /* Don't let GitHub's hover/stripe styles bleed in */
+  background: none !important;
+}
+
+.reading-guide-inline {
+  background-color: var(--bgColor-accent-muted, rgba(56, 139, 253, 0.1)) !important;
+  border-left: 3px solid var(--borderColor-accent-emphasis, #388bfd);
+  padding: 8px 16px !important;
+}
+
+/* Header banner (outside diff table, below file header) */
+.reading-guide-banner {
+  background-color: var(--bgColor-accent-muted, rgba(56, 139, 253, 0.1));
+  border-left: 3px solid var(--borderColor-accent-emphasis, #388bfd);
+  padding: 8px 16px;
+  margin: 0;
+}
+
+/* Shared content layout */
+.reading-guide-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reading-guide-label {
+  color: var(--fgColor-accent, #388bfd);
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.reading-guide-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fgColor-default, #c9d1d9);
+}
+
+.reading-guide-fallback {
+  font-style: italic;
+  color: var(--fgColor-muted, #8b949e);
+  font-size: 12px;
+}
